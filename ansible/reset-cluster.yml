@@ -1,0 +1,130 @@
+---
+- name: Safe Kubernetes cluster reset
+  hosts: k8s_cluster
+  become: yes
+  tasks:
+    - name: Check if kubeadm exists and is executable
+      stat:
+        path: /usr/local/bin/kubeadm
+      register: kubeadm_check
+
+    - name: Reset kubeadm (remove existing cluster configuration)
+      shell: kubeadm reset -f
+      when: kubeadm_check.stat.exists and kubeadm_check.stat.executable
+      ignore_errors: yes
+
+    - name: Stop kubelet service
+      systemd:
+        name: kubelet
+        state: stopped
+      ignore_errors: yes
+
+    - name: Remove Kubernetes configuration directories only
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/kubelet
+        - /var/lib/etcd
+        - /etc/cni/net.d
+        - /opt/cni/bin
+        - /var/lib/cni
+        - /run/flannel
+      ignore_errors: yes
+
+    - name: Remove user kube configs
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /root/.kube
+        - /home/ubuntu/.kube
+        - /home/vagrant/.kube
+      ignore_errors: yes
+
+    # 안전한 iptables 정리 (기본 정책 보존)
+    - name: Clean up Kubernetes iptables rules safely
+      shell: |
+        # Kubernetes 관련 체인만 삭제 (기본 네트워크는 보존)
+        iptables -t nat -D POSTROUTING -s 10.244.0.0/16 -j MASQUERADE 2>/dev/null || true
+        iptables -t nat -D POSTROUTING -s 10.96.0.0/12 -j MASQUERADE 2>/dev/null || true
+
+        # Kubernetes 관련 체인 삭제
+        iptables -t nat -F KUBE-SERVICES 2>/dev/null || true
+        iptables -t nat -X KUBE-SERVICES 2>/dev/null || true
+        iptables -t nat -F KUBE-NODEPORTS 2>/dev/null || true
+        iptables -t nat -X KUBE-NODEPORTS 2>/dev/null || true
+        iptables -t nat -F KUBE-POSTROUTING 2>/dev/null || true
+        iptables -t nat -X KUBE-POSTROUTING 2>/dev/null || true
+        iptables -t nat -F KUBE-MARK-MASQ 2>/dev/null || true
+        iptables -t nat -X KUBE-MARK-MASQ 2>/dev/null || true
+
+        iptables -F KUBE-SERVICES 2>/dev/null || true
+        iptables -X KUBE-SERVICES 2>/dev/null || true
+        iptables -F KUBE-EXTERNAL-SERVICES 2>/dev/null || true
+        iptables -X KUBE-EXTERNAL-SERVICES 2>/dev/null || true
+        iptables -F KUBE-FORWARD 2>/dev/null || true
+        iptables -X KUBE-FORWARD 2>/dev/null || true
+      ignore_errors: yes
+
+    # CNI 인터페이스만 안전하게 제거
+    - name: Remove CNI interfaces only (preserve system interfaces)
+      shell: |
+        # CNI 관련 인터페이스만 제거
+        ip link delete cni0 2>/dev/null || true
+        ip link delete flannel.1 2>/dev/null || true
+        ip link delete kube-bridge 2>/dev/null || true
+        ip link delete weave 2>/dev/null || true
+        ip link delete datapath 2>/dev/null || true
+
+        # 시스템 중요 인터페이스는 건드리지 않음 (eth0, lo, docker0 등)
+      ignore_errors: yes
+
+    - name: Clean up temporary files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/kubeadm-join-command
+        - /tmp/kube*
+      ignore_errors: yes
+
+    - name: Restart containerd service
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+
+    - name: Start kubelet service
+      systemd:
+        name: kubelet
+        state: started
+        enabled: yes
+      ignore_errors: yes
+
+    - name: Verify network connectivity
+      shell: ping -c 1 8.8.8.8
+      register: network_test
+      ignore_errors: yes
+
+    - name: Display network status
+      debug:
+        msg: |
+          Network connectivity: {{ 'OK' if network_test.rc == 0 else 'FAILED' }}
+          If network failed, the node may need manual recovery.
+
+    - name: Reset completion message
+      debug:
+        msg: |
+          ✅ Safe Kubernetes cluster reset completed!
+
+          Cleaned up:
+          - Kubernetes configuration files
+          - Kubernetes-specific iptables rules (system rules preserved)
+          - CNI interfaces (system interfaces preserved)
+
+          Preserved:
+          - System network configuration
+          - SSH connectivity
+          - Basic iptables rules
