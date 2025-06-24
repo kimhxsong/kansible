@@ -11,10 +11,10 @@
         backup: yes
         marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
         block: |
-          192.168.127.128 k8s-master
-          192.168.127.129 k8s-worker1
-          192.168.127.130 k8s-worker2
-          192.168.127.131 k8s-worker3
+          192.168.127.129 k8s-master
+          192.168.127.130 k8s-worker1
+          192.168.127.131 k8s-worker2
+          192.168.127.132 k8s-worker3
 
     - name: Set hostname based on inventory
       hostname:
@@ -274,7 +274,7 @@
     - name: Initialize cluster (only if not already healthy)
       shell: |
         kubeadm init \
-          --apiserver-advertise-address={{ ansible_default_ipv4.address }} \
+          --apiserver-advertise-address={{ hostvars['k8s-master']['ansible_host'] }} \
           --pod-network-cidr=10.244.0.0/16 \
           --service-cidr=10.96.0.0/12
       register: kubeadm_init
@@ -330,7 +330,7 @@
 - name: Join worker nodes to cluster
   hosts: k8s-worker*
   become: yes
-  serial: 1 # 한 번에 하나씩 안전하게 처리
+  #serial: 1 # 한 번에 하나씩 안전하게 처리
   vars:
     master_node: k8s-master
   tasks:
