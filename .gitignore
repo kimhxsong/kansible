@@ -1,0 +1,35 @@
+# Vagrant 관련
+.vagrant/
+*.box
+*.log
+*.vdi
+*.vmdk
+*.iso
+*.img
+*.ova
+*.ovf
+*.nvram
+*.vagrant
+
+# Kubernetes(k8s, k3s) 관련
+*.yaml~
+*.yml~
+*.log
+*.out
+*.tmp
+*.bak
+*.swp
+*.lock
+kubeconfig*
+
+# k3s 관련
+k3s-data/
+k3s-agent/
+k3s-server/
+
+# OS/에디터 임시파일
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~ 

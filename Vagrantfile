@@ -37,7 +37,7 @@ Vagrant.configure("2") do |config|
   # Master node
   config.vm.define "k8s-master" do |master|
     master.vm.hostname = "k8s-master"
-    master.vm.network "private_network", ip: "192.168.128.129", netmask: "255.255.255.0"
+    master.vm.network "private_network", ip: "192.168.127.129", netmask: "255.255.255.0"
     master.vm.provider "virtualbox" do |vb|
       vb.memory = "2048"
       vb.cpus = 2
