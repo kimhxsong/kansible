@@ -39,8 +39,8 @@ Vagrant.configure("2") do |config|
     master.vm.hostname = "k8s-master"
     master.vm.network "private_network", ip: "192.168.127.129", netmask: "255.255.255.0"
     master.vm.provider "virtualbox" do |vb|
-      vb.memory = "2048"
-      vb.cpus = 2
+      vb.memory = "4096"
+      vb.cpus = 4
       vb.name = "k8s-master"
       
       # 아래는 vagrant-disksize 플러그인 도입 전 수동 디스크 생성 코드 (주석처리)
@@ -68,8 +68,8 @@ Vagrant.configure("2") do |config|
       worker.vm.hostname = "k8s-worker#{i}"
       worker.vm.network "private_network", ip: "192.168.127.#{129 + i}", netmask: "255.255.255.0"
       worker.vm.provider "virtualbox" do |vb|
-        vb.memory = "1024"
-        vb.cpus = 1
+        vb.memory = "2048"
+        vb.cpus = 2
         vb.name = "k8s-worker#{i}"
         
         # 아래는 vagrant-disksize 플러그인 도입 전 수동 디스크 생성 코드 (주석처리)
