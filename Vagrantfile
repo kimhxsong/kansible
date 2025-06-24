@@ -37,7 +37,7 @@ Vagrant.configure("2") do |config|
   # Master node
   config.vm.define "k8s-master" do |master|
     master.vm.hostname = "k8s-master"
-    master.vm.network "private_network", ip: "192.168.127.129", netmask: "255.255.255.0"
+    master.vm.network "private_network", ip: "192.168.127.128", netmask: "255.255.255.0"
     master.vm.provider "virtualbox" do |vb|
       vb.memory = "4096"
       vb.cpus = 4
@@ -66,7 +66,7 @@ Vagrant.configure("2") do |config|
   (1..3).each do |i|
     config.vm.define "k8s-worker#{i}" do |worker|
       worker.vm.hostname = "k8s-worker#{i}"
-      worker.vm.network "private_network", ip: "192.168.127.#{129 + i}", netmask: "255.255.255.0"
+      worker.vm.network "private_network", ip: "192.168.127.#{128 + i}", netmask: "255.255.255.0"
       worker.vm.provider "virtualbox" do |vb|
         vb.memory = "2048"
         vb.cpus = 2

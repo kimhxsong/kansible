@@ -1,10 +1,8 @@
 ---
-- name: Configure Kubernetes cluster with role-based installation
+# 1단계: 모든 노드 공통 설정
+- name: Configure Kubernetes cluster prerequisites
   hosts: k8s_cluster
   become: yes
-  vars:
-    kubernetes_version: "{{ kubectl_version.stdout | default('') }}"
-
   tasks:
     # 공통 설정 (모든 노드)
     - name: Update /etc/hosts with all cluster nodes
@@ -13,10 +11,10 @@
         backup: yes
         marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
         block: |
-          192.168.127.129 k8s-master
-          192.168.127.130 k8s-worker1
-          192.168.127.131 k8s-worker2
-          192.168.127.132 k8s-worker3
+          192.168.127.128 k8s-master
+          192.168.127.129 k8s-worker1
+          192.168.127.130 k8s-worker2
+          192.168.127.131 k8s-worker3
 
     - name: Set hostname based on inventory
       hostname:
@@ -103,6 +101,16 @@
     - name: Apply sysctl settings
       shell: sysctl --system
 
+    # 시스템 아키텍처 확인
+    - name: Detect system architecture
+      shell: uname -m
+      register: system_arch
+      changed_when: false
+
+    - name: Set architecture variable
+      set_fact:
+        k8s_arch: "{{ 'arm64' if system_arch.stdout in ['aarch64', 'arm64'] else 'amd64' }}"
+
     # Kubernetes 버전 확인 (모든 노드)
     - name: Get latest kubectl version
       shell: curl -L -s https://dl.k8s.io/release/stable.txt
@@ -111,20 +119,19 @@
     # 공통 Kubernetes 바이너리 설치 (모든 노드)
     - name: Download kubelet binary (required on all nodes)
       get_url:
-        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/arm64/kubelet"
+        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/{{ k8s_arch }}/kubelet"
         dest: /usr/local/bin/kubelet
         mode: "0755"
 
     - name: Download kubeadm binary (required on all nodes)
       get_url:
-        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/arm64/kubeadm"
+        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/{{ k8s_arch }}/kubeadm"
         dest: /usr/local/bin/kubeadm
         mode: "0755"
 
-    # kubectl 설치 (마스터 노드 + 선택적으로 워커 노드)
     - name: Download kubectl binary (master + optional for workers)
       get_url:
-        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/arm64/kubectl"
+        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/{{ k8s_arch }}/kubectl"
         dest: /usr/local/bin/kubectl
         mode: "0755"
 
@@ -171,16 +178,6 @@
         enabled: yes
         daemon_reload: yes
 
-    # 마스터 노드 전용 설정
-    - name: Create kubernetes config directory (master only)
-      file:
-        path: /etc/kubernetes
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-      when: inventory_hostname == 'k8s-master'
-
     # 버전 확인
     - name: Check installed versions
       shell: |
@@ -194,78 +191,282 @@
       debug:
         msg: "{{ version_check.stdout_lines }}"
 
-# 별도 플레이 - 마스터 노드 초기화
+# 2단계: 마스터 노드 초기화
 - name: Initialize Kubernetes master
   hosts: k8s-master
   become: yes
   tasks:
-    - name: Initialize Kubernetes cluster
+    - name: Check if cluster is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: cluster_initialized
+
+    - name: Check if cluster is healthy (if already initialized)
+      shell: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_health
+      ignore_errors: yes
+      when: cluster_initialized.stat.exists
+
+    - name: Display current cluster status
+      debug:
+        msg: |
+          Cluster status: {{ 'Already initialized' if cluster_initialized.stat.exists else 'Not initialized' }}
+          {% if cluster_initialized.stat.exists and cluster_health.rc == 0 %}
+          Current nodes:
+          {{ cluster_health.stdout }}
+          {% endif %}
+
+    - name: Reset existing cluster if needed
+      block:
+        - name: Confirm cluster reset
+          pause:
+            prompt: |
+              ⚠️  Kubernetes cluster already exists but may be broken.
+              Do you want to reset and reinitialize? (yes/no)
+            echo: yes
+          register: reset_confirm
+          when:
+            - cluster_initialized.stat.exists
+            - cluster_health.rc != 0
+
+        - name: Reset cluster
+          shell: kubeadm reset -f
+          when:
+            - cluster_initialized.stat.exists
+            - cluster_health.rc != 0
+            - reset_confirm.user_input == 'yes'
+
+        - name: Clean up old cluster files
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/kubernetes
+            - /var/lib/kubelet
+            - /var/lib/etcd
+            - /etc/cni/net.d
+            - /root/.kube
+            - /home/ubuntu/.kube
+          when:
+            - cluster_initialized.stat.exists
+            - cluster_health.rc != 0
+            - reset_confirm.user_input == 'yes'
+
+        - name: Restart kubelet
+          systemd:
+            name: kubelet
+            state: restarted
+          when:
+            - cluster_initialized.stat.exists
+            - cluster_health.rc != 0
+            - reset_confirm.user_input == 'yes'
+
+        - name: Update cluster initialization status
+          set_fact:
+            cluster_initialized: false
+          when:
+            - cluster_initialized.stat.exists
+            - cluster_health.rc != 0
+            - reset_confirm.user_input == 'yes'
+
+    - name: Initialize cluster (only if not already healthy)
       shell: |
         kubeadm init \
-          --apiserver-advertise-address=192.168.127.129 \
+          --apiserver-advertise-address={{ ansible_default_ipv4.address }} \
           --pod-network-cidr=10.244.0.0/16 \
           --service-cidr=10.96.0.0/12
       register: kubeadm_init
-      when: not ansible_check_mode
+      when: not cluster_initialized.stat.exists or (cluster_health is defined and cluster_health.rc != 0)
 
-    - name: Create .kube directory for root
-      file:
-        path: /root/.kube
-        state: directory
-        mode: "0755"
+    - name: Setup kubectl for root
+      shell: |
+        mkdir -p /root/.kube
+        cp /etc/kubernetes/admin.conf /root/.kube/config
+      when: kubeadm_init is defined and kubeadm_init.changed
 
-    - name: Copy admin.conf to .kube/config
-      copy:
-        src: /etc/kubernetes/admin.conf
-        dest: /root/.kube/config
-        remote_src: yes
-        owner: root
-        group: root
-        mode: "0644"
+    - name: Setup kubectl for ubuntu user
+      shell: |
+        mkdir -p /home/ubuntu/.kube
+        cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+        chown ubuntu:ubuntu /home/ubuntu/.kube/config
+      when: kubeadm_init is defined and kubeadm_init.changed
 
-    - name: Create .kube directory for ubuntu user
-      file:
-        path: /home/vagrant/.kube
-        state: directory
-        owner: vagrant
-        group: vagrant
-        mode: "0755"
+    - name: Check if Flannel is already installed
+      shell: kubectl get pods -n kube-system | grep flannel
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: flannel_check
+      ignore_errors: yes
 
-    - name: Copy admin.conf to ubuntu user
-      copy:
-        src: /etc/kubernetes/admin.conf
-        dest: /home/vagrant/.kube/config
-        remote_src: yes
-        owner: vagrant
-        group: vagrant
-        mode: "0644"
+    - name: Install CNI (Flannel) if not already installed
+      shell: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: flannel_check.rc != 0
 
-    - name: Get join command
-      shell: kubeadm token create --print-join-command
-      register: join_command
-      when: not ansible_check_mode
+    - name: Wait for master node to be Ready
+      shell: kubectl get node {{ ansible_hostname }} --no-headers | awk '{print $2}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: master_status
+      until: master_status.stdout == "Ready"
+      retries: 30
+      delay: 10
 
-    - name: Save join command to file
-      copy:
-        content: "{{ join_command.stdout }}"
-        dest: /tmp/kubeadm-join-command
-      when: not ansible_check_mode
-
-    - name: Display join command
+    - name: Display master initialization result
       debug:
-        msg: "Join command: {{ join_command.stdout }}"
-      when: not ansible_check_mode
+        msg: |
+          ✅ Master node {{ ansible_hostname }} is ready!
+          Master status: {{ master_status.stdout }}
+          {% if kubeadm_init is defined and kubeadm_init.changed %}
+          New cluster initialized successfully!
+          {% else %}
+          Using existing healthy cluster.
+          {% endif %}
 
-# 별도 플레이 - 워커 노드 조인 (수동 실행 필요)
+# 3단계: 워커 노드 조인
 - name: Join worker nodes to cluster
   hosts: k8s-worker*
   become: yes
+  serial: 1 # 한 번에 하나씩 안전하게 처리
+  vars:
+    master_node: k8s-master
   tasks:
-    - name: Display instruction for joining workers
+    - name: Check if node already exists in cluster
+      shell: kubectl get node {{ ansible_hostname }}
+      delegate_to: "{{ master_node }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: node_exists
+      ignore_errors: yes
+      failed_when: false
+
+    - name: Skip if already joined
+      debug:
+        msg: "✅ Node {{ ansible_hostname }} already exists in cluster, skipping join"
+      when: node_exists is defined and node_exists.rc == 0
+
+    - name: Join worker to cluster
+      block:
+        - name: Generate join command
+          shell: kubeadm token create --print-join-command
+          delegate_to: "{{ master_node }}"
+          register: join_command
+
+        - name: Execute join
+          shell: "{{ join_command.stdout }}"
+          register: join_result
+
+        - name: Verify join success
+          debug:
+            msg: |
+              ✅ Node {{ ansible_hostname }} successfully joined:
+              {{ join_result.stdout }}
+
+        - name: Wait for node to be Ready
+          shell: kubectl get node {{ ansible_hostname }} --no-headers | awk '{print $2}'
+          delegate_to: "{{ master_node }}"
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+          register: node_ready
+          until: node_ready.stdout == "Ready"
+          retries: 20
+          delay: 15
+
+        - name: Setup kubectl for ubuntu user on worker
+          block:
+            - name: Create .kube directory for ubuntu user
+              file:
+                path: /home/ubuntu/.kube
+                state: directory
+                owner: ubuntu
+                group: ubuntu
+                mode: "0755"
+
+            - name: Copy admin.conf from master to worker
+              shell: |
+                scp -o StrictHostKeyChecking=no ubuntu@192.168.127.129:/etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+                chown ubuntu:ubuntu /home/ubuntu/.kube/config
+                chmod 644 /home/ubuntu/.kube/config
+              ignore_errors: yes
+
+        - name: Display node join status
+          debug:
+            msg: |
+              ✅ Worker node {{ ansible_hostname }} successfully joined and ready!
+              Node status: {{ node_ready.stdout }}
+
+      when: node_exists is not defined or node_exists.rc != 0
+
+# 4단계: 클러스터 검증
+- name: Validate cluster deployment
+  hosts: k8s-master
+  become: yes
+  tasks:
+    - name: Get cluster info
+      shell: kubectl cluster-info
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_info
+
+    - name: Get all nodes
+      shell: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: all_nodes
+
+    - name: Get system pods
+      shell: kubectl get pods -n kube-system
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: system_pods
+
+    - name: Check cluster health
+      shell: |
+        # 모든 노드가 Ready인지 확인
+        NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+
+        # 시스템 포드가 모두 Running인지 확인  
+        NOT_RUNNING=$(kubectl get pods -n kube-system --no-headers | grep -v "Running\|Completed" | wc -l)
+
+        echo "Nodes not ready: $NOT_READY"
+        echo "Pods not running: $NOT_RUNNING"
+
+        if [ $NOT_READY -eq 0 ] && [ $NOT_RUNNING -eq 0 ]; then
+          echo "CLUSTER_STATUS: HEALTHY"
+        else
+          echo "CLUSTER_STATUS: UNHEALTHY"
+        fi
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: health_check
+
+    - name: Display cluster status
       debug:
         msg: |
-          To join worker nodes to the cluster, run the following command on each worker:
-          1. Get the join command from master: cat /tmp/kubeadm-join-command
-          2. Run the join command on this worker node
+          🎯 Kubernetes Cluster Deployment Complete!
 
-          Or use this playbook with the join command variable set.
+          === CLUSTER INFO ===
+          {{ cluster_info.stdout }}
+
+          === NODES ===
+          {{ all_nodes.stdout }}
+
+          === SYSTEM PODS ===
+          {{ system_pods.stdout }}
+
+          === HEALTH CHECK ===
+          {{ health_check.stdout }}
+
+          {% if 'HEALTHY' in health_check.stdout %}
+          ✅ Cluster is healthy and ready for workloads!
+
+          Next steps:
+          1. Deploy applications: kubectl create deployment nginx --image=nginx
+          2. Create services: kubectl expose deployment nginx --port=80 --type=NodePort
+          3. Check with: kubectl get all
+          {% else %}
+          ⚠️  Cluster has some issues. Check individual components.
+          {% endif %}
