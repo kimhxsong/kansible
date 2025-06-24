@@ -1,0 +1,77 @@
+---
+- name: Install kubectl (ARM64) - Manual Download Only
+  hosts: all
+  become: yes
+  tasks:
+    - name: Install curl (basic requirement)
+      apt:
+        name: curl
+        state: present
+        update_cache: no
+
+    - name: Get latest kubectl version
+      shell: curl -L -s https://dl.k8s.io/release/stable.txt
+      register: kubectl_version
+
+    - name: Download kubectl binary
+      get_url:
+        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/arm64/kubectl"
+        dest: /tmp/kubectl
+        mode: "0755"
+
+    - name: Download kubectl sha256
+      get_url:
+        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/arm64/kubectl.sha256"
+        dest: /tmp/kubectl.sha256
+
+    - name: Verify kubectl checksum
+      shell: "echo $(cat /tmp/kubectl.sha256)  /tmp/kubectl | sha256sum --check"
+      args:
+        chdir: /tmp
+      register: sha256_check
+      failed_when: sha256_check.rc != 0 or 'OK' not in sha256_check.stdout
+
+    - name: Copy kubectl to /usr/local/bin
+      copy:
+        src: /tmp/kubectl
+        dest: /usr/local/bin/kubectl
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: yes
+
+    - name: Ensure kubectl is executable in ~/.local/bin for vagrant user
+      become: false
+      shell: |
+        mkdir -p ~/.local/bin
+        cp /tmp/kubectl ~/.local/bin/kubectl
+        chmod +x ~/.local/bin/kubectl
+      args:
+        executable: /bin/bash
+
+    - name: Add ~/.local/bin to PATH for vagrant user
+      become: false
+      lineinfile:
+        path: ~/.bashrc
+        line: "export PATH=$PATH:~/.local/bin"
+        create: yes
+        state: present
+
+    - name: Clean up temporary files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/kubectl
+        - /tmp/kubectl.sha256
+
+    - name: Check kubectl version
+      command: kubectl version --client --output=yaml
+      register: kubectl_version_output
+      changed_when: false
+      environment:
+        PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+
+    - name: Print kubectl version
+      debug:
+        var: kubectl_version_output.stdout
