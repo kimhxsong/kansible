@@ -1,0 +1,103 @@
+---
+- name: Configure static IP addresses and update /etc/hosts
+  hosts: k8s_cluster
+  become: yes
+  tasks:
+    - name: Configure static IP for k8s-master
+      blockinfile:
+        path: /etc/netplan/50-vagrant.yaml
+        backup: yes
+        block: |
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              eth0:
+                dhcp4: true
+              eth1:
+                dhcp4: false
+                addresses:
+                  - 192.168.127.129/24
+                gateway4: 192.168.127.2
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+      when: inventory_hostname == 'k8s-master'
+      notify: apply netplan
+
+    - name: Configure static IP for k8s-worker1
+      blockinfile:
+        path: /etc/netplan/50-vagrant.yaml
+        backup: yes
+        block: |
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              eth0:
+                dhcp4: true
+              eth1:
+                dhcp4: false
+                addresses:
+                  - 192.168.127.130/24
+                gateway4: 192.168.127.2
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+      when: inventory_hostname == 'k8s-worker1'
+      notify: apply netplan
+
+    - name: Configure static IP for k8s-worker2
+      blockinfile:
+        path: /etc/netplan/50-vagrant.yaml
+        backup: yes
+        block: |
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              eth0:
+                dhcp4: true
+              eth1:
+                dhcp4: false
+                addresses:
+                  - 192.168.127.131/24
+                gateway4: 192.168.127.2
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+      when: inventory_hostname == 'k8s-worker2'
+      notify: apply netplan
+
+    - name: Configure static IP for k8s-worker3
+      blockinfile:
+        path: /etc/netplan/50-vagrant.yaml
+        backup: yes
+        block: |
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              eth0:
+                dhcp4: true
+              eth1:
+                dhcp4: false
+                addresses:
+                  - 192.168.127.132/24
+                gateway4: 192.168.127.2
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+      when: inventory_hostname == 'k8s-worker3'
+      notify: apply netplan
+
+    - name: Update /etc/hosts with all cluster nodes
+      blockinfile:
+        path: /etc/hosts
+        backup: yes
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
+        block: |
+          192.168.127.129 k8s-master
+          192.168.127.130 k8s-worker1
+          192.168.127.131 k8s-worker2
+          192.168.127.132 k8s-worker3
+
+  handlers:
+    - name: apply netplan
+      command: netplan apply
