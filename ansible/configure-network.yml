@@ -2,74 +2,44 @@
 - name: Configure static IP addresses and update /etc/hosts
   hosts: k8s_cluster
   become: yes
+  vars:
+    # 네트워크 구성 변수
+    cluster_network:
+      subnet: "{{ ansible_host.split('.')[0:3] | join('.') }}"
+      gateway: "{{ ansible_host.split('.')[0:3] | join('.') }}.2"
+      dns_servers:
+        - "{{ ansible_host.split('.')[0:3] | join('.') }}.2"
+        - "127.0.0.53"
+        - "8.8.8.8" # fallback DNS
+
   tasks:
-    - name: Configure static IP for k8s-master
-      blockinfile:
-        path: /etc/netplan/50-vagrant.yaml
-        backup: yes
-        block: |
-          network:
-            version: 2
-            renderer: networkd
-            ethernets:
-              eth0:
-                dhcp4: true
-              eth1:
-                dhcp4: false
-                addresses:
-                  - 192.168.127.128/24
-                #gateway4: 192.168.127.2
-                nameservers:
-                  addresses: [8.8.8.8, 8.8.4.4]
-      when: inventory_hostname == 'k8s-master'
-      notify: apply netplan
+    - name: Validate network configuration
+      assert:
+        that:
+          - ansible_host is defined
+          - ansible_host | regex_search('^192\.168\.127\.\d+$')
+        fail_msg: "Invalid IP address format for {{ inventory_hostname }}: {{ ansible_host }}"
+        success_msg: "Valid IP address for {{ inventory_hostname }}: {{ ansible_host }}"
 
-    - name: Configure static IP for k8s-worker1
-      blockinfile:
+    - name: Check if netplan file exists
+      stat:
         path: /etc/netplan/50-vagrant.yaml
-        backup: yes
-        block: |
-          network:
-            version: 2
-            renderer: networkd
-            ethernets:
-              eth0:
-                dhcp4: true
-              eth1:
-                dhcp4: false
-                addresses:
-                  - 192.168.127.129/24
-                #gateway4: 192.168.127.2
-                nameservers:
-                  addresses: [8.8.8.8, 8.8.4.4]
-      when: inventory_hostname == 'k8s-worker1'
-      notify: apply netplan
+      register: netplan_file
 
-    - name: Configure static IP for k8s-worker2
-      blockinfile:
-        path: /etc/netplan/50-vagrant.yaml
+    - name: Backup existing netplan configuration
+      copy:
+        src: /etc/netplan/50-vagrant.yaml
+        dest: /etc/netplan/50-vagrant.yaml.backup-{{ ansible_date_time.epoch }}
+        remote_src: yes
         backup: yes
-        block: |
-          network:
-            version: 2
-            renderer: networkd
-            ethernets:
-              eth0:
-                dhcp4: true
-              eth1:
-                dhcp4: false
-                addresses:
-                  - 192.168.127.130/24
-                #gateway4: 192.168.127.2
-                nameservers:
-                  addresses: [8.8.8.8, 8.8.4.4]
-      when: inventory_hostname == 'k8s-worker2'
-      notify: apply netplan
+      when: netplan_file.stat.exists
 
-    - name: Configure static IP for k8s-worker3
+    - name: Configure static IP for nodes
       blockinfile:
         path: /etc/netplan/50-vagrant.yaml
         backup: yes
+        create: yes
+        mode: "0600"
         block: |
           network:
             version: 2
@@ -80,12 +50,24 @@
               eth1:
                 dhcp4: false
                 addresses:
-                  - 192.168.127.131/24
-                #gateway4: 192.168.127.2
+                  - {{ ansible_host }}/24
                 nameservers:
-                  addresses: [8.8.8.8, 8.8.4.4]
-      when: inventory_hostname == 'k8s-worker3'
-      notify: apply netplan
+                  addresses:
+                    {% for dns in cluster_network.dns_servers %}
+                    - "{{ dns }}"
+                    {% endfor %}
+                routes:
+                  - to: 0.0.0.0/0
+                    via: "{{ cluster_network.gateway }}"
+                    metric: 100
+                    on-link: true
+      notify:
+        - fix netplan permissions
+        - validate netplan
+        - apply netplan
+        - verify connectivity
+        - test gateway connectivity
+        - test dns resolution
 
     - name: Update /etc/hosts with all cluster nodes
       blockinfile:
@@ -93,11 +75,37 @@
         backup: yes
         marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
         block: |
-          192.168.127.129 k8s-master
-          192.168.127.130 k8s-worker1
-          192.168.127.131 k8s-worker2
-          192.168.127.132 k8s-worker3
+          {% for host in groups['k8s_cluster'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
 
   handlers:
+    - name: fix netplan permissions
+      shell: chmod 600 /etc/netplan/*.yaml
+      become: yes
+
+    - name: validate netplan
+      command: netplan try --timeout=30
+      register: netplan_validate
+      failed_when: netplan_validate.rc != 0
+      become: yes
+
     - name: apply netplan
       command: netplan apply
+      register: netplan_apply
+      failed_when: netplan_apply.rc != 0
+      become: yes
+
+    - name: verify connectivity
+      wait_for:
+        timeout: 10
+
+    - name: test gateway connectivity
+      command: ping -c 3 {{ cluster_network.gateway }}
+      register: gateway_ping
+      ignore_errors: yes
+
+    - name: test dns resolution
+      command: nslookup google.com
+      register: dns_test
+      ignore_errors: yes

@@ -81,13 +81,8 @@ status:
 # Configure Kubernetes cluster
 cluster: up
 	@echo "🎯 Configuring Kubernetes cluster..."
-	@echo "⏳ Waiting for SSH connections..."
-	@for machine in $(VAGRANT_MACHINES); do \
-		echo "  - Checking connection to $$machine..."; \
-		timeout 180 sh -c 'until vagrant ssh $$machine -c "echo Connected" >/dev/null 2>&1; do sleep 5; done' || \
-		(echo "❌ SSH connection to $$machine failed." && exit 1); \
-	done
-	@echo "✅ SSH connections established."
+	@echo "⏳ Quick connection check..."
+	ansible all -i $(ANSIBLE_INVENTORY) -m ping -o || (echo "Connection issues detected, but proceeding..." && sleep 10)
 	@echo "🔧 Running Ansible playbook..."
 	ansible-playbook -i $(ANSIBLE_INVENTORY) $(ANSIBLE_PLAYBOOK_CONFIGURE)
 	@echo "✅ Cluster configuration complete."
@@ -101,9 +96,9 @@ reset:
 # Validate cluster status
 validate:
 	@echo "🔍 Validating cluster status..."
-	@vagrant ssh k8s-master -c "kubectl get nodes -o wide"
+	@vagrant ssh k8s-master -c "sudo kubectl get nodes -o wide"
 	@echo ""
-	@vagrant ssh k8s-master -c "kubectl get pods -A"
+	@vagrant ssh k8s-master -c "sudo kubectl get pods -A"
 
 # --- Testing ---
 

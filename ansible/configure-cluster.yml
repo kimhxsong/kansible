@@ -11,10 +11,9 @@
         backup: yes
         marker: "# {mark} ANSIBLE MANAGED BLOCK - K8S CLUSTER"
         block: |
-          192.168.127.129 k8s-master
-          192.168.127.130 k8s-worker1
-          192.168.127.131 k8s-worker2
-          192.168.127.132 k8s-worker3
+          {% for host in groups['k8s_cluster'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
 
     - name: Set hostname based on inventory
       hostname:
@@ -46,7 +45,7 @@
           - lsb-release
           - apt-transport-https
         state: present
-        update_cache: no
+        update_cache: yes
 
     # 컨테이너 런타임 설치 (모든 노드 필수)
     - name: Install containerd
@@ -106,6 +105,19 @@
       shell: uname -m
       register: system_arch
       changed_when: false
+
+    - name: Download and install correct CNI plugins (arm64)
+      when: system_arch.stdout in ["aarch64", "arm64"]
+      shell: |
+        export CNI_VERSION="v1.3.0"
+        curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-arm64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
+
+    - name: Set permissions for CNI plugins
+      file:
+        path: /opt/cni/bin
+        state: directory
+        mode: "0755"
+        recurse: yes
 
     - name: Set architecture variable
       set_fact:
@@ -248,7 +260,7 @@
             - /var/lib/etcd
             - /etc/cni/net.d
             - /root/.kube
-            - /home/ubuntu/.kube
+            - /home/vagrant/.kube
           when:
             - cluster_initialized.stat.exists
             - cluster_health.rc != 0
@@ -286,11 +298,11 @@
         cp /etc/kubernetes/admin.conf /root/.kube/config
       when: kubeadm_init is defined and kubeadm_init.changed
 
-    - name: Setup kubectl for ubuntu user
+    - name: Setup kubectl for vagrant user
       shell: |
-        mkdir -p /home/ubuntu/.kube
-        cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
-        chown ubuntu:ubuntu /home/ubuntu/.kube/config
+        mkdir -p /home/vagrant/.kube
+        cp /etc/kubernetes/admin.conf /home/vagrant/.kube/config
+        chown vagrant:vagrant /home/vagrant/.kube/config
       when: kubeadm_init is defined and kubeadm_init.changed
 
     - name: Check if Flannel is already installed
@@ -375,21 +387,21 @@
           retries: 20
           delay: 15
 
-        - name: Setup kubectl for ubuntu user on worker
+        - name: Setup kubectl for vagrant user on worker
           block:
-            - name: Create .kube directory for ubuntu user
+            - name: Create .kube directory for vagrant user
               file:
-                path: /home/ubuntu/.kube
+                path: /home/vagrant/.kube
                 state: directory
-                owner: ubuntu
-                group: ubuntu
+                owner: vagrant
+                group: vagrant
                 mode: "0755"
 
             - name: Copy admin.conf from master to worker
               shell: |
-                scp -o StrictHostKeyChecking=no ubuntu@192.168.127.129:/etc/kubernetes/admin.conf /home/ubuntu/.kube/config
-                chown ubuntu:ubuntu /home/ubuntu/.kube/config
-                chmod 644 /home/ubuntu/.kube/config
+                scp -o StrictHostKeyChecking=no vagrant@{{ hostvars['k8s-master']['ansible_host'] }}:/etc/kubernetes/admin.conf /home/vagrant/.kube/config
+                chown vagrant:vagrant /home/vagrant/.kube/config
+                chmod 644 /home/vagrant/.kube/config
               ignore_errors: yes
 
         - name: Display node join status

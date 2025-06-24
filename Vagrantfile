@@ -67,6 +67,12 @@ Vagrant.configure("2") do |config|
     config.vm.define "k8s-worker#{i}" do |worker|
       worker.vm.hostname = "k8s-worker#{i}"
       worker.vm.network "private_network", ip: "192.168.127.#{128 + i}", netmask: "255.255.255.0"
+      
+      # Set disk size. Worker 3 gets 100GB, others get 50GB.
+      if Vagrant.has_plugin?("vagrant-disksize")
+        worker.disksize.size = (i == 3) ? '100GB' : '50GB'
+      end
+
       worker.vm.provider "virtualbox" do |vb|
         vb.memory = "2048"
         vb.cpus = 2

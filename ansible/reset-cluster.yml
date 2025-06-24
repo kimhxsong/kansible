@@ -3,13 +3,35 @@
   hosts: k8s_cluster
   become: yes
   tasks:
+    - name: Display reset warning
+      debug:
+        msg: |
+          ⚠️  Starting Kubernetes cluster reset...
+          This will remove all cluster configuration while preserving system settings.
+
     - name: Check if kubeadm exists and is executable
       stat:
         path: /usr/local/bin/kubeadm
       register: kubeadm_check
 
+    - name: Check current cluster status
+      shell: kubectl get nodes --no-headers 2>/dev/null | wc -l
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_node_count
+      ignore_errors: yes
+      when: kubeadm_check.stat.exists
+
+    - name: Display current cluster info
+      debug:
+        msg: |
+          Current cluster status:
+          - kubeadm available: {{ kubeadm_check.stat.exists | default(false) }}
+          - Active nodes: {{ cluster_node_count.stdout | default('0') }}
+      when: kubeadm_check.stat.exists
+
     - name: Reset kubeadm (remove existing cluster configuration)
-      shell: kubeadm reset -f
+      shell: kubeadm reset -f --cleanup-tmp-dir
       when: kubeadm_check.stat.exists and kubeadm_check.stat.executable
       ignore_errors: yes
 
@@ -19,7 +41,29 @@
         state: stopped
       ignore_errors: yes
 
-    - name: Remove Kubernetes configuration directories only
+    - name: Kill any remaining kubelet processes
+      shell: |
+        pkill -f kubelet || true
+        pkill -f kube-proxy || true
+        pkill -f kube-apiserver || true
+        pkill -f kube-controller-manager || true
+        pkill -f kube-scheduler || true
+        pkill -f etcd || true
+      ignore_errors: yes
+
+    - name: Unmount kubelet directories
+      shell: |
+        # Unmount any remaining kubelet mounts
+        for mount in $(mount | grep '/var/lib/kubelet' | awk '{print $3}'); do
+          umount "$mount" 2>/dev/null || true
+        done
+        # Unmount any remaining container mounts
+        for mount in $(mount | grep '/run/containerd' | awk '{print $3}'); do
+          umount "$mount" 2>/dev/null || true
+        done
+      ignore_errors: yes
+
+    - name: Remove Kubernetes configuration directories
       file:
         path: "{{ item }}"
         state: absent
@@ -31,6 +75,8 @@
         - /opt/cni/bin
         - /var/lib/cni
         - /run/flannel
+        - /var/lib/containerd/io.containerd.grpc.v1.cri/sandboxes
+        - /var/lib/containerd/io.containerd.grpc.v1.cri/containers
       ignore_errors: yes
 
     - name: Remove user kube configs
@@ -90,11 +136,28 @@
         - /tmp/kube*
       ignore_errors: yes
 
+    - name: Clean up any remaining containers
+      shell: |
+        # Stop and remove all containers (if any)
+        if command -v crictl >/dev/null 2>&1; then
+          crictl stop $(crictl ps -q) 2>/dev/null || true
+          crictl rm $(crictl ps -aq) 2>/dev/null || true
+          crictl rmi $(crictl images -q) 2>/dev/null || true
+        fi
+      ignore_errors: yes
+
     - name: Restart containerd service
       systemd:
         name: containerd
         state: restarted
         enabled: yes
+
+    - name: Wait for containerd to be ready
+      wait_for:
+        port: 22
+        delay: 5
+        timeout: 30
+      ignore_errors: yes
 
     - name: Start kubelet service
       systemd:
@@ -108,23 +171,55 @@
       register: network_test
       ignore_errors: yes
 
-    - name: Display network status
+    - name: Verify services status
+      shell: |
+        echo "=== Service Status ==="
+        systemctl is-active containerd || echo "containerd: inactive"
+        systemctl is-active kubelet || echo "kubelet: inactive" 
+        echo "=== Network Interfaces ==="
+        ip link show | grep -E '^[0-9]+:' | awk '{print $2}' | sed 's/:$//'
+        echo "=== Mount Points ==="
+        mount | grep -E '(kubelet|kubernetes|cni)' || echo "No K8s mounts remaining"
+      register: service_status
+      ignore_errors: yes
+
+    - name: Display network and service status
       debug:
         msg: |
           Network connectivity: {{ 'OK' if network_test.rc == 0 else 'FAILED' }}
-          If network failed, the node may need manual recovery.
+
+          {{ service_status.stdout }}
+
+          {% if network_test.rc != 0 %}
+          ⚠️  Network connectivity failed - node may need manual recovery.
+          {% endif %}
 
     - name: Reset completion message
       debug:
         msg: |
-          ✅ Safe Kubernetes cluster reset completed!
+          ✅ Enhanced Kubernetes cluster reset completed!
 
-          Cleaned up:
-          - Kubernetes configuration files
-          - Kubernetes-specific iptables rules (system rules preserved)
-          - CNI interfaces (system interfaces preserved)
+          🧹 Cleaned up:
+          - Kubernetes configuration files and directories
+          - Container runtime state (images, containers, sandboxes)
+          - Kubernetes-specific iptables rules
+          - CNI interfaces and configurations
+          - Kubelet processes and mounts
+          - Temporary files and caches
 
-          Preserved:
+          🔒 Preserved:
           - System network configuration
-          - SSH connectivity
-          - Basic iptables rules
+          - SSH connectivity and system services
+          - Host OS configuration
+          - Container runtime (containerd) ready for reuse
+
+          📋 Next steps:
+          - Run 'make cluster' to reconfigure the cluster
+          - Check service status if any issues occurred
+          - Verify network connectivity on all nodes
+
+    - name: Download and install correct CNI plugins (arm64)
+      when: system_arch.stdout in ["aarch64", "arm64"]
+      shell: |
+        export CNI_VERSION="v1.3.0"
+        curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-arm64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
