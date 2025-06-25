@@ -30,102 +30,80 @@ Vagrant와 Ansible을 사용하여 다중 노드 Kubernetes 클러스터를 자�
 
 ## 설치 및 설정
 
-1. **저장소 클론:**
-   ```sh
-   git clone https://github.com/kimhxsong/kansible
-   cd kansible
-   ```
-
-2. **Ubuntu ISO 다운로드 (필요 시):**
-   `Vagrantfile`에서 `config.vm.box`가 설정된 경우 이 단계는 필요 없습니다. 로컬 ISO 파일을 직접 사용하려면 아래 명령어로 다운로드하세요.
-   ```sh
-   make download-iso
-   ```
-   다운로드된 `ubuntu-24.04.2-live-server-arm64.iso` 파일은 프로젝트 루트에 위치해야 합니다.
-
 ## 🚀 빠른 시작
 
 모든 준비가 완료되었다면, 다음 명령어 하나로 전체 클러스터를 생성하고 구성할 수 있습니다.
 
 ```bash
-# VM 생성부터 Kubernetes 클러스터 구성까지 한 번에 실행
+git clone https://github.com/kimhxsong/kansible
 make all
 ```
 
-프로세스가 완료되면, `make validate` 명령어로 클러스터 상태를 확인할 수 있습니다.
+## 📚 주요 명령어 (Makefile 기반)
 
-## 📚 상세 사용법
-
-### 방법 1: Makefile 사용 (권장)
-
-이 프로젝트는 모든 일반적인 작업을 간소화하기 위해 `Makefile`을 사용합니다.
-
-#### 주요 명령어
-- **클러스터 전체 생성:**
+- **전체 클러스터 생성 및 구성:**
   ```sh
   make all
   ```
-- **VM만 시작:**
+- **VM만 생성 및 부팅:**
   ```sh
   make up
   ```
-- **실행 중인 VM에 Kubernetes 구성:**
+- **정적 IP 및 /etc/hosts 네트워크 설정:**
+  ```sh
+  make network
+  ```
+- **네트워크 + 쿠버네티스 클러스터 구성:**
   ```sh
   make cluster
   ```
-- **클러스터 상태 확인:**
+- **VMs 리셋 후 재구성:**
   ```sh
-  make validate
+  make re
   ```
-- **클러스터 초기화:**
+- **클러스터만 리셋:**
   ```sh
   make reset
   ```
-- **모든 VM 삭제 및 환경 정리:**
+- **모든 VM 중지:**
   ```sh
-  make destroy
+  make down
+  ```
+- **모든 VM 삭제:**
+  ```sh
+  make clean
   ```
 
-#### SSH 접속 및 기타 명령어
-- **마스터 노드 접속:** `make ssh-master`
-- **워커 노드 접속:** `make ssh-worker1`, `make ssh-worker2`, ...
-- **Kubelet 로그 확인:** `make logs`
-- **테스트 앱 배포:** `make deploy-test`
-
-### 방법 2: 수동 실행
-
-`Makefile`을 사용하지 않고 각 단계를 직접 실행할 수도 있습니다.
-
-1. **VM 생성 및 시작:**
-   ```bash
-   vagrant up
-   ```
-
-2. **Ansible 플레이북 실행:**
-   ```bash
-   ansible-playbook -i ansible/inventory.ini ansible/configure-cluster.yml
-   ```
-
-3. **클러스터 상태 검증:**
-   ```bash
-   vagrant ssh k8s-master -c "kubectl get nodes -o wide"
-   vagrant ssh k8s-master -c "kubectl get pods -n kube-system"
-   ```
-
-### 일반적인 워크플로우 시나리오
+## 📝 일반적인 워크플로우 예시
 
 - **최초 환경 구성:**
-  `make all`
-
+  ```sh
+  make all
+  ```
 - **중단했던 환경 다시 시작:**
-  `make up` 실행 후 `make validate`로 상태 확인
-
-- **클러스터 재구성:**
-  `make reset` -> `make cluster` -> `make validate`
-
-- **개발 완료 후 정리:**
-  - 일시 정지: `make down`
-  - 완전 삭제: `make destroy`
+  ```sh
+  make up
+  ```
+- **네트워크만 재설정:**
+  ```sh
+  make network
+  ```
+- **클러스터만 리셋:**
+  ```sh
+  make reset
+  ```
+- ** VMs 삭제 후 클러스터 재구성:**
+  ```sh
+  make re
+  ```
+- **일시 정지:**
+  ```sh
+  make down
+  ```
+- **완전 삭제:**
+  ```sh
+  make clean
+  ```
 
 ## 🐛 문제 해결
 
@@ -143,19 +121,18 @@ make all
 ### 클러스터 구성 실패
 - **해결책 1: 클러스터 완전 초기화 후 재구성**
   ```bash
-  make reset
-  make cluster
+  make re
   ```
 - **해결책 2: Kubelet 로그 확인**
   마스터 노드에 접속하여 `sudo journalctl -u kubelet -f` 명령어로 실시간 로그를 확인합니다.
   ```bash
-  make logs
+  vagrant ssh k8s-master -c "sudo journalctl -u kubelet -f"
   ```
 
 ### 네트워크 연결 문제
 - **노드 간 Ping 테스트:**
   ```bash
-  vagrant ssh k8s-master -c "ping 192.168.127.129"
+  vagrant ssh k8s-master -c "ping k8s-worker1"
   ```
 - **라우팅 테이블 확인:**
   ```bash
@@ -182,7 +159,6 @@ make all
 ### 클러스터 아키텍처
 ![](./image.png)
 
-
 ### 네트워크 구성
 - **호스트 전용 네트워크**: 192.168.127.0/24
 - **Pod CIDR**: 10.244.0.0/16 (Flannel CNI)
@@ -193,10 +169,31 @@ make all
 - **`configure-cluster.yml`**: 클러스터 전체 구성 (공통 설정, 마스터 초기화, 워커 조인)
 - **`reset-cluster.yml`**: 클러스터 초기화
 
+## 📦 Vagrant Box vs ISO 이미지 사용 안내
+
+현재 프로젝트는 Vagrant Cloud의 box 이미지를 그대로 사용합니다. 이 방식은 이미 OS가 설치된 상태의 가상머신 이미지를 복사해서 바로 부팅하므로 설치 속도가 매우 빠릅니다.
+
+만약 사용자가 직접 ISO 이미지를 사용하고 싶다면, Vagrantfile의 관련 주석을 해제하고 medium 옵션(예: `--medium ./ubuntu-24.04.2-live-server-arm64.iso`)을 직접 지정해야 합니다. 이 경우, VM 부팅 후 OS 설치 과정을 처음부터 자동으로 진행하므로 box 방식에 비해 시간이 훨씬 오래 걸립니다.
+
+> **Tip:** 특별한 커스텀 이미지가 필요하지 않다면, Vagrant Cloud의 box를 그대로 사용하는 것이 훨씬 빠르고 편리합니다. ISO로 직접 설치하는 것은 커스텀 빌드나 특수한 환경이 필요할 때만 권장됩니다.
 
 ## 📖 참고 자료
 
 - [Kubernetes 공식 문서](https://kubernetes.io/docs/)
 - [Vagrant 공식 문서](https://www.vagrantup.com/docs)
 - [Ansible 공식 문서](https://docs.ansible.com/)
+
+## 🧩 이후에 해볼만한 시도들
+
+- **Custom GUI 툴 개발**  
+  클러스터 관리 및 배포를 위한 자체 GUI 툴을 만들어 자동화 경험을 확장
+
+- **Packer를 이용한 커스텀 Vagrant Box 제작**  
+  Packer로 직접 커스텀 이미지를 빌드하여 Vagrant Box로 활용
+
+- **Kubespray로 AMD64 아키텍처 클라우드 환경에 클러스터 구성 및 배포**  
+  Kubespray를 활용해 퍼블릭 클라우드(AWS, GCP 등)나 x86 환경에서의 자동화 실습
+
+- **CoreDNS, CNI 관련 내용 정리**  
+  CoreDNS와 다양한 CNI(Flannel 등) 구성 및 동작 원리 문서화
 
