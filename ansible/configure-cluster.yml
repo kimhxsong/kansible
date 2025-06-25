@@ -106,18 +106,11 @@
       register: system_arch
       changed_when: false
 
-    - name: Download and install correct CNI plugins (arm64)
-      when: system_arch.stdout in ["aarch64", "arm64"]
-      shell: |
-        export CNI_VERSION="v1.3.0"
-        curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-arm64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
-
-    - name: Set permissions for CNI plugins
+    - name: Create CNI bin directory
       file:
         path: /opt/cni/bin
         state: directory
         mode: "0755"
-        recurse: yes
 
     - name: Set architecture variable
       set_fact:
@@ -230,6 +223,10 @@
           {{ cluster_health.stdout }}
           {% endif %}
 
+    - name: Set cluster reset needed flag
+      set_fact:
+        cluster_needs_reset: "{{ cluster_initialized.stat.exists and cluster_health.rc != 0 }}"
+
     - name: Reset existing cluster if needed
       block:
         - name: Confirm cluster reset
@@ -239,16 +236,10 @@
               Do you want to reset and reinitialize? (yes/no)
             echo: yes
           register: reset_confirm
-          when:
-            - cluster_initialized.stat.exists
-            - cluster_health.rc != 0
 
         - name: Reset cluster
           shell: kubeadm reset -f
-          when:
-            - cluster_initialized.stat.exists
-            - cluster_health.rc != 0
-            - reset_confirm.user_input == 'yes'
+          when: reset_confirm.user_input == 'yes'
 
         - name: Clean up old cluster files
           file:
@@ -261,49 +252,52 @@
             - /etc/cni/net.d
             - /root/.kube
             - /home/vagrant/.kube
-          when:
-            - cluster_initialized.stat.exists
-            - cluster_health.rc != 0
-            - reset_confirm.user_input == 'yes'
+          when: reset_confirm.user_input == 'yes'
 
         - name: Restart kubelet
           systemd:
             name: kubelet
             state: restarted
-          when:
-            - cluster_initialized.stat.exists
-            - cluster_health.rc != 0
-            - reset_confirm.user_input == 'yes'
+          when: reset_confirm.user_input == 'yes'
 
         - name: Update cluster initialization status
           set_fact:
-            cluster_initialized: false
-          when:
-            - cluster_initialized.stat.exists
-            - cluster_health.rc != 0
-            - reset_confirm.user_input == 'yes'
+            cluster_initialized: { stat: { exists: false } }
+          when: reset_confirm.user_input == 'yes'
+      when: cluster_needs_reset
 
-    - name: Initialize cluster (only if not already healthy)
+    - name: Set cluster initialization needed flag
+      set_fact:
+        cluster_needs_init: "{{ not cluster_initialized.stat.exists or (cluster_health is defined and cluster_health.rc != 0) }}"
+
+    - name: Initialize cluster
       shell: |
         kubeadm init \
           --apiserver-advertise-address={{ hostvars['k8s-master']['ansible_host'] }} \
           --pod-network-cidr=10.244.0.0/16 \
           --service-cidr=10.96.0.0/12
       register: kubeadm_init
-      when: not cluster_initialized.stat.exists or (cluster_health is defined and cluster_health.rc != 0)
+      when: cluster_needs_init
 
     - name: Setup kubectl for root
       shell: |
         mkdir -p /root/.kube
         cp /etc/kubernetes/admin.conf /root/.kube/config
-      when: kubeadm_init is defined
+      when: cluster_needs_init
 
     - name: Setup kubectl for vagrant user
       shell: |
         mkdir -p /home/vagrant/.kube
         cp /etc/kubernetes/admin.conf /home/vagrant/.kube/config
         chown vagrant:vagrant /home/vagrant/.kube/config
-      when: kubeadm_init is defined
+      when: cluster_needs_init
+
+    - name: Install CNI plugins (required before Flannel)
+      shell: |
+        export CNI_VERSION="v1.3.0"
+        curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-{{ k8s_arch }}-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
+        chmod +x /opt/cni/bin/*
+      when: cluster_needs_init
 
     - name: Check if Flannel is already installed
       shell: kubectl get pods -n kube-system | grep flannel
@@ -332,7 +326,7 @@
         msg: |
           ✅ Master node {{ ansible_hostname }} is ready!
           Master status: {{ master_status.stdout }}
-          {% if kubeadm_init is defined and kubeadm_init.changed %}
+          {% if cluster_needs_init %}
           New cluster initialized successfully!
           {% else %}
           Using existing healthy cluster.
@@ -355,10 +349,14 @@
       ignore_errors: yes
       failed_when: false
 
+    - name: Set node join needed flag
+      set_fact:
+        node_needs_join: "{{ node_exists is not defined or node_exists.rc != 0 }}"
+
     - name: Skip if already joined
       debug:
         msg: "✅ Node {{ ansible_hostname }} already exists in cluster, skipping join"
-      when: node_exists is defined and node_exists.rc == 0
+      when: not node_needs_join
 
     - name: Join worker to cluster
       block:
@@ -387,22 +385,14 @@
           retries: 20
           delay: 15
 
-        - name: Setup kubectl for vagrant user on worker
-          block:
-            - name: Create .kube directory for vagrant user
-              file:
-                path: /home/vagrant/.kube
-                state: directory
-                owner: vagrant
-                group: vagrant
-                mode: "0755"
-
-            - name: Copy admin.conf from master to worker
-              shell: |
-                scp -o StrictHostKeyChecking=no vagrant@{{ hostvars['k8s-master']['ansible_host'] }}:/etc/kubernetes/admin.conf /home/vagrant/.kube/config
-                chown vagrant:vagrant /home/vagrant/.kube/config
-                chmod 644 /home/vagrant/.kube/config
-              ignore_errors: yes
+        - name: Setup kubectl for vagrant user on worker (optional)
+          shell: |
+            mkdir -p /home/vagrant/.kube
+            scp -o StrictHostKeyChecking=no vagrant@{{ hostvars['k8s-master']['ansible_host'] }}:/etc/kubernetes/admin.conf /home/vagrant/.kube/config
+            chown vagrant:vagrant /home/vagrant/.kube/config
+            chmod 644 /home/vagrant/.kube/config
+          ignore_errors: yes
+          become: yes
 
         - name: Display node join status
           debug:
@@ -410,7 +400,7 @@
               ✅ Worker node {{ ansible_hostname }} successfully joined and ready!
               Node status: {{ node_ready.stdout }}
 
-      when: node_exists is not defined or node_exists.rc != 0
+      when: node_needs_join
 
 # 4단계: 클러스터 검증
 - name: Validate cluster deployment

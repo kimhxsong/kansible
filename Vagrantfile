@@ -23,7 +23,7 @@ Vagrant.configure("2") do |config|
   
   # 기본 공유 폴더 비활성화
   config.vm.synced_folder "./", "/vagrant", disabled: true
-  
+
   # vagrant-disksize 플러그인 사용
   if Vagrant.has_plugin?("vagrant-disksize")
     config.disksize.size = "50GB"
@@ -69,9 +69,7 @@ Vagrant.configure("2") do |config|
       worker.vm.network "private_network", ip: "192.168.127.#{128 + i}", netmask: "255.255.255.0"
       
       # Set disk size. Worker 3 gets 100GB, others get 50GB.
-      if Vagrant.has_plugin?("vagrant-disksize")
-        worker.disksize.size = (i == 3) ? '100GB' : '50GB'
-      end
+      worker.disksize.size = (i == 3) ? '100GB' : '50GB'
 
       worker.vm.provider "virtualbox" do |vb|
         vb.memory = "2048"
