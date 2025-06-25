@@ -296,14 +296,14 @@
       shell: |
         mkdir -p /root/.kube
         cp /etc/kubernetes/admin.conf /root/.kube/config
-      when: kubeadm_init is defined and kubeadm_init.changed
+      when: kubeadm_init is defined
 
     - name: Setup kubectl for vagrant user
       shell: |
         mkdir -p /home/vagrant/.kube
         cp /etc/kubernetes/admin.conf /home/vagrant/.kube/config
         chown vagrant:vagrant /home/vagrant/.kube/config
-      when: kubeadm_init is defined and kubeadm_init.changed
+      when: kubeadm_init is defined
 
     - name: Check if Flannel is already installed
       shell: kubectl get pods -n kube-system | grep flannel

@@ -96,9 +96,9 @@ reset:
 # Validate cluster status
 validate:
 	@echo "🔍 Validating cluster status..."
-	@vagrant ssh k8s-master -c "sudo kubectl get nodes -o wide"
+	@vagrant ssh k8s-master -c "kubectl get nodes -o wide"
 	@echo ""
-	@vagrant ssh k8s-master -c "sudo kubectl get pods -A"
+	@vagrant ssh k8s-master -c "kubectl get pods -A"
 
 # --- Testing ---
 
