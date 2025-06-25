@@ -217,9 +217,3 @@
           - Run 'make cluster' to reconfigure the cluster
           - Check service status if any issues occurred
           - Verify network connectivity on all nodes
-
-    - name: Download and install correct CNI plugins (arm64)
-      when: system_arch.stdout in ["aarch64", "arm64"]
-      shell: |
-        export CNI_VERSION="v1.3.0"
-        curl -L "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-arm64-${CNI_VERSION}.tgz" | tar -C /opt/cni/bin -xz
